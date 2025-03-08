@@ -4,21 +4,32 @@ import requests
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
+import os
+import json
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente do arquivo .env
+load_dotenv()
+
+# Verificar se as variáveis de ambiente estão sendo carregadas
+# print("GEMINI_API_KEY:", os.getenv("GEMINI_API_KEY"))
+# print("SPREADSHEET_ID:", os.getenv("SPREADSHEET_ID"))
+# print("GOOGLE_CREDENTIALS:", os.getenv("GOOGLE_CREDENTIALS"))
 
 # Configurações iniciais
 app = Flask(__name__)
 
 # Configurações do Gemini
-GEMINI_API_KEY = "AIzaSyCJGAapg7tKgRCGk4EEhYUoSVF-e4FINhk"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
 # Configurações do Google Sheets
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-CREDENTIALS_FILE = "credenciais.json"  # Arquivo de credenciais do Google Sheets
-SPREADSHEET_ID = "10D0O13KzytlECgma6s-Yiz6JNhOjemDMZbOp0To2RDY"  # ID da planilha do Google Sheets
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
-# Autenticação no Google Sheets
-creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+# Carregar credenciais do Google Sheets a partir da variável de ambiente
+creds_json = os.getenv("GOOGLE_CREDENTIALS")
+creds = Credentials.from_service_account_info(info=json.loads(creds_json), scopes=SCOPES)
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
@@ -55,17 +66,21 @@ def interagir_com_gemini(mensagem, contexto=None):
             }
         ]
     }
-    response = requests.post(GEMINI_API_URL, json=data, headers=headers)
-    if response.status_code == 200:
+    try:
+        response = requests.post(GEMINI_API_URL, json=data, headers=headers)
+        response.raise_for_status()  # Lança uma exceção para códigos de status HTTP inválidos
         return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    else:
-        print("Erro na API do Gemini:", response.status_code, response.text)
+    except Exception as e:
+        print("Erro na API do Gemini:", str(e))
         return "Desculpe, ocorreu um erro ao processar sua mensagem."
 
 # Função para salvar transações no Google Sheets
 def salvar_transacao(valor, tipo, categoria, descricao):
     data = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    sheet.append_row([data, valor, tipo, categoria, descricao])
+    try:
+        sheet.append_row([data, valor, tipo, categoria, descricao])
+    except Exception as e:
+        print("Erro ao salvar transação:", str(e))
 
 # Função para consultar transações no Google Sheets
 def consultar_transacoes(mes=None, tipo=None):
@@ -106,16 +121,20 @@ def webhook():
     # Processar mensagem de texto
     if incoming_msg:
         try:
+            print(f"Processando mensagem: {incoming_msg}")
             resposta_gemini = interagir_com_gemini(incoming_msg, contexto)
-            resposta = resposta_gemini
+            print(f"Resposta do Gemini: {resposta_gemini}")
 
             # Verifica se a resposta do Gemini indica uma ação específica
             if "registrar receita" in resposta_gemini.lower():
-                valor, descricao = resposta_gemini.split("|")
-                valor = float(valor.strip())
-                descricao = descricao.strip()
-                salvar_transacao(valor, "receita", "Receita", descricao)
-                resposta = f"Receita de R${valor:.2f} registrada com sucesso."
+                try:
+                    valor, descricao = resposta_gemini.split("|")
+                    valor = float(valor.strip())
+                    descricao = descricao.strip()
+                    salvar_transacao(valor, "receita", "Receita", descricao)
+                    resposta = f"Receita de R${valor:.2f} registrada com sucesso."
+                except ValueError:
+                    resposta = "Formato inválido. Use: 'receita X descrição'."
             elif "consultar valor total de gastos" in resposta_gemini.lower():
                 gastos = consultar_transacoes(tipo="gasto")
                 if gastos:
